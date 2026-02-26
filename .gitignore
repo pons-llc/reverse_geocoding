@@ -1,0 +1,9 @@
+node_modules/
+parcel_data/
+.vite/
+*.json
+.env
+*output.pmtiles
+*output_parcel.pmtiles
+.wrangler
+rsdt_data

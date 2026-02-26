@@ -1,0 +1,267 @@
+<!--
+  Copyright (c) 2026 Pons LLC (合同会社Pons)
+  Licensed under the MIT License.
+-->
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PMTiles Viewer</title>
+    <!-- Tailwind CSS (スタイリング用) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MapLibre GL JS -->
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        /* 地図コンテナのスタイル */
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 h-screen flex flex-col font-sans">
+
+    <!-- ヘッダー / 入力エリア -->
+    <div class="p-4 bg-white shadow-md z-20 flex flex-wrap gap-4 items-center">
+        <h1 class="text-xl font-bold mr-4 text-gray-800">PMTiles Map Viewer</h1>
+        <div class="flex items-center gap-2">
+            <label for="lat" class="text-sm font-medium text-gray-600">緯度:</label>
+            <input type="number" id="lat" value="35.3389" step="0.000001"
+                class="border rounded px-2 py-1 w-32 focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <div class="flex items-center gap-2">
+            <label for="lng" class="text-sm font-medium text-gray-600">経度:</label>
+            <input type="number" id="lng" value="139.4886" step="0.000001"
+                class="border rounded px-2 py-1 w-32 focus:outline-none focus:ring-2 focus:ring-blue-500">
+        </div>
+        <button onclick="showMap()"
+            class="bg-blue-600 text-white px-5 py-1.5 rounded hover:bg-blue-700 transition shadow">
+            地図を表示
+        </button>
+    </div>
+
+    <!-- 地図と情報パネルのコンテナ (初期状態は非表示) -->
+    <div id="map-wrapper" class="hidden flex-grow relative">
+        <div id="map" class="absolute inset-0"></div>
+
+        <!-- 属性情報表示パネル -->
+        <div id="info-panel"
+            class="absolute bottom-6 right-6 bg-white p-4 rounded-lg shadow-xl border border-gray-200 w-80 z-10">
+            <div id="info">
+                <h3 class="font-bold border-b pb-2 mb-2 text-gray-800">取得した属性情報</h3>
+                <p class="text-sm text-gray-500">地図上のポイントをクリックしてください。</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as pmtiles from "https://unpkg.com/pmtiles@3.2.0/dist/index.js";
+
+        // PMTiles プロトコルの初期化
+        const protocol = new pmtiles.Protocol();
+        maplibregl.addProtocol("pmtiles", protocol.tile);
+
+        let map = null;
+        let clickMarker = null;
+        let centerMarker = null;
+
+        // CSVキャッシュ用の変数
+        let csvDataCache = null;
+        let isCsvLoading = false;
+
+        /**
+         * CSVファイルをロードしてパースする関数
+         */
+        async function loadCsvData() {
+            if (csvDataCache || isCsvLoading) return; // 既にキャッシュがあるか読み込み中なら終了
+
+            isCsvLoading = true;
+            try {
+                console.log("CSVデータの読み込みを開始します...");
+                const response = await fetch('./mt_town_all.csv');
+                if (!response.ok) throw new Error("CSVファイルが見つかりません");
+
+                const csvText = await response.text();
+
+                // PapaParseを使用してパース
+                Papa.parse(csvText, {
+                    header: true,
+                    skipEmptyLines: true,
+                    complete: (results) => {
+                        csvDataCache = results.data;
+                        isCsvLoading = false;
+                        console.log(`CSVロード完了: ${csvDataCache.length} 行のデータをキャッシュしました。`);
+                    },
+                    error: (err) => {
+                        console.error("CSVパースエラー:", err);
+                        isCsvLoading = false;
+                    }
+                });
+            } catch (error) {
+                console.error("CSV取得エラー:", error);
+                isCsvLoading = false;
+            }
+        }
+
+        function updateCenterMarker(lng, lat) {
+            if (centerMarker) {
+                centerMarker.setLngLat([lng, lat]);
+            } else {
+                centerMarker = new maplibregl.Marker({ color: '#F59E0B' })
+                    .setLngLat([lng, lat])
+                    .addTo(map);
+            }
+        }
+
+        window.showMap = function () {
+            const lat = parseFloat(document.getElementById('lat').value);
+            const lng = parseFloat(document.getElementById('lng').value);
+
+            if (isNaN(lat) || isNaN(lng)) {
+                alert("有効な緯度・経度を入力してください。");
+                return;
+            }
+
+            // 地図表示と同時にCSVのロードを開始（未ロードの場合のみ）
+            loadCsvData();
+
+            const mapContainer = document.getElementById('map-wrapper');
+            mapContainer.classList.remove('hidden');
+
+            if (!map) {
+                setTimeout(() => { initializeMap(lng, lat); }, 50);
+            } else {
+                map.flyTo({ center: [lng, lat], zoom: 18 });
+                updateCenterMarker(lng, lat);
+            }
+        }
+
+        function initializeMap(lng, lat) {
+            map = new maplibregl.Map({
+                container: 'map',
+                style: {
+                    version: 8,
+                    sources: {
+                        'gsi_photo': {
+                            type: 'raster',
+                            tiles: ['https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg'],
+                            tileSize: 256,
+                            maxzoom: 18,
+                            attribution: '国土地理院'
+                        }
+                    },
+                    layers: [{
+                        id: 'gsi-photo-layer',
+                        type: 'raster',
+                        source: 'gsi_photo',
+                        maxzoom: 22
+                    }]
+                },
+                center: [lng, lat],
+                zoom: 18,
+                dragPan: true, // 操作性を考慮し有効化
+                scrollZoom: true
+            });
+
+            updateCenterMarker(lng, lat);
+
+            map.on('load', () => {
+                // PMTilesソース1
+                map.addSource('pmtiles-source-1', { type: 'vector', url: 'pmtiles://./fujisawa_rsdt.pmtiles' });
+                map.addLayer({
+                    id: 'pmtiles-point-layer-1',
+                    type: 'circle',
+                    source: 'pmtiles-source-1',
+                    'source-layer': 'data',
+                    paint: { 'circle-radius': 6, 'circle-color': '#EF4444', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
+                });
+
+                // PMTilesソース2
+                map.addSource('pmtiles-source-2', { type: 'vector', url: 'pmtiles://./output_parcel_fujisawa.pmtiles' });
+                map.addLayer({
+                    id: 'pmtiles-point-layer-2',
+                    type: 'circle',
+                    source: 'pmtiles-source-2',
+                    'source-layer': 'data',
+                    paint: { 'circle-radius': 6, 'circle-color': '#3B82F6', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' }
+                });
+            });
+
+            map.on('click', async (e) => {
+                if (clickMarker) clickMarker.remove();
+                clickMarker = new maplibregl.Marker({ color: '#10B981' }).setLngLat(e.lngLat).addTo(map);
+
+                const features = map.queryRenderedFeatures(e.point, {
+                    layers: ['pmtiles-point-layer-1', 'pmtiles-point-layer-2']
+                });
+
+                const infoDiv = document.getElementById('info');
+                if (features.length === 0) {
+                    infoDiv.innerHTML = `<h3 class="font-bold border-b pb-2 mb-2 text-gray-800">取得情報</h3><p class="text-sm text-gray-500">ポイントがありません</p>`;
+                    return;
+                }
+
+                const props = features[0].properties;
+                const targetLg = String(props.lg_code);
+                const targetMachiaza = String(props.machiaza_id);
+
+                // CSVがまだロード中の場合のハンドリング
+                if (!csvDataCache) {
+                    infoDiv.innerHTML = `<p class="text-sm text-blue-600 animate-pulse">CSVデータを読み込み中です。少々お待ちください...</p>`;
+                    return;
+                }
+
+                // キャッシュされたデータから検索
+                const matchedRow = csvDataCache.find(row =>
+                    String(row.lg_code) === targetLg && String(row.machiaza_id) === targetMachiaza
+                );
+
+                if (matchedRow) {
+                    const resultJson = {
+                        pref: matchedRow.pref || "",
+                        county: matchedRow.county || "",
+                        city: matchedRow.city || "",
+                        ward: matchedRow.ward || "",
+                        oaza_cho: matchedRow.oaza_cho || "",
+                        chome: matchedRow.chome || "",
+                        chome_number: matchedRow.chome_number || "",
+                        koaza: matchedRow.koaza || ""
+                    };
+
+                    infoDiv.innerHTML = `
+                <h3 class="font-bold border-b pb-2 mb-2 text-gray-800">住所マスター照合結果</h3>
+                <div class="text-[10px] text-gray-500 mb-2">Source: ${features[0].layer.id}</div>
+                <pre class="text-xs text-green-800 bg-green-50 p-2 rounded border border-green-200 overflow-auto max-h-64">${JSON.stringify(resultJson, null, 2)}</pre>
+            `;
+                    console.log("Matched JSON:", resultJson);
+                    alert(`${resultJson.pref}${resultJson.county}${resultJson.city}${resultJson.ward}${resultJson.oaza_cho}${resultJson.chome || ""}${props.blk_id || props.prc_num1}-${props.rsdt_id || props.prc_num2}${"-" & props.prc_num3 || ""}`)
+                } else {
+                    infoDiv.innerHTML = `
+                <h3 class="font-bold border-b pb-2 mb-2 text-gray-800">照合失敗</h3>
+                <p class="text-xs text-red-500">マスターCSVに該当するIDがありませんでした。</p>
+                <div class="mt-2 text-[10px] bg-gray-100 p-1">ID: ${targetLg} / ${targetMachiaza}</div>
+            `;
+                }
+
+            });
+
+
+
+            // ホバー時のカーソル変更
+            const layers = ['pmtiles-point-layer-1', 'pmtiles-point-layer-2'];
+            layers.forEach(l => {
+                map.on('mouseenter', l, () => map.getCanvas().style.cursor = 'pointer');
+                map.on('mouseleave', l, () => map.getCanvas().style.cursor = '');
+            });
+
+
+        }
+    </script>
+</body>
+
+</html>
