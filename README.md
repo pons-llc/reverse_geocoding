@@ -81,6 +81,7 @@ npx vite
 ブラウザで `http://localhost:5173/demo/index.html` または `geocoding.html` を開いてください。
 
 デモに投入しているデータは藤沢市のみです。
+[こちらからデモをご確認ください。](/demo/geocoding.html)
 
 ### 4. PMTiles の作成（参考）
 
